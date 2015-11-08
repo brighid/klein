@@ -5,9 +5,6 @@ from uuid import uuid4
 from collections import OrderedDict
 from exceptions import Exception
 from klein import Klein
-from pprint import PrettyPrinter
-
-pp = PrettyPrinter(indent=4).pprint
 
 tier = environ.get('tier', 'production')
 
