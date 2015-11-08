@@ -12,41 +12,13 @@ pp = PrettyPrinter(indent=4).pprint
 tier = environ.get('tier', 'production')
 
 
-def parse_error(failure):
-    """
-    An error handler that turns a Python exception object into a JSON string
-    that describes the error.
-    """
-    error = str(failure.type)
-    error_content = '.'.join(
-        error[error.find("'"):error.rfind("'")].split('.')[1:])
-    error_message = failure.getErrorMessage()
-    error_stack = failure.getTraceback() if tier == 'debug' else {}
-
-    return dumps({'error': error_content,
-                  'error_message': error_message,
-                  'stack': error_stack})
+class NameNotFoundError(Exception):
+    code = 404
+    reason = "Couldn't find {!r} in customer collection."
 
 
-class HTTPError(Exception):
-    def __init__(self, message, status):
-        super(HTTPError, self).__init__(message)
-        self.status = status
-
-
-class UniqueKeyError(HTTPError):
-    def __init__(self, message):
-        super(self.__class__, self).__init__(message, 400)
-
-
-class NotFoundError(HTTPError):
-    def __init__(self, message):
-        super(self.__class__, self).__init__(message, 404)
-
-
-class ValidationError(HTTPError):
-    def __init__(self, message):
-        super(self.__class__, self).__init__(message, 400)
+class ValidationError(Exception):
+    code = 400
 
 
 class CustomerStore(object):
@@ -74,8 +46,8 @@ class CustomerStore(object):
                 last_name=body['last_name'])
 
             if pk in self.customers:
-                raise UniqueKeyError(
-                    'First name + last_name combination must be unique')
+                raise ValidationError(
+                    "First & last name combination must be unique.")
 
             body['id'] = uuid4().get_hex()
             self.customers[pk] = body
@@ -84,19 +56,19 @@ class CustomerStore(object):
         else:
             if not request.args or 'limit' in request.args:
                 if not self.customers:
-                    raise NotFoundError('No customers in collection')
+                    raise ValidationError('No customers in collection!')
                 # Show only two records by default
                 return dumps(self.customers[:request.args.get('limit', 2)])
 
             elif request.args.keys() != ['first_name', 'last_name']:
                 raise ValidationError(
-                    'You must include `first_name` and `last_name` keys')
+                    "You must include both 'first_name' and 'last_name'.")
             pk = '{first_name} {last_name}'.format(
                 first_name=request.args['first_name'][0],
                 last_name=request.args['last_name'][0])
             if pk not in self.customers:
-                raise NotFoundError(
-                    'Name {!r} not found in collection'.format(pk))
+                raise NameNotFoundError(
+                    NameNotFoundError.reason.format(pk))
             return dumps(self.customers[pk])
 
     @app.route('/<string:name>', methods=['PUT'])
@@ -110,8 +82,7 @@ class CustomerStore(object):
                 ('You must include `first_name`, `last_name`, '
                  '`country` and/or `id` key(s).'))
         if name not in self.customers:
-            raise NotFoundError(
-                '"{name}" not found in customer collection.'.format(name=name))
+            raise NameNotFoundError(NameNotFoundError.reason.format(name))
 
         self.customers[name].update(body)
         return dumps(self.customers[name])
@@ -120,22 +91,29 @@ class CustomerStore(object):
     def retrieve_customer(self, request, name):
         request.setHeader('Content-Type', 'application/json')
         if name not in self.customers:
-            raise NotFoundError(
-                '"{name}" not found in customer collection.'.format(name=name))
+            raise NameNotFoundError(NameNotFoundError.reason.format(name))
         return dumps(self.customers[name])
 
     @app.route('/<string:name>', methods=['DELETE'])
     def delete_customer(self, request, name):
         request.setHeader('Content-Type', 'application/json')
         if name not in self.customers:
-            raise NotFoundError(
-                '"{name}" not found in customer collection.'.format(name=name))
+            raise NameNotFoundError(NameNotFoundError.reason.format(name))
         return dumps({'deleted': self.customers.pop(name)})
 
-    @app.handle_errors(HTTPError)
+    @app.handle_errors(NameNotFoundError, ValidationError)
     def error_handler(self, request, failure):
-        request.setResponseCode(failure.value.status)
-        return parse_error(failure)
+        # An error handler that turns a Python exception object into a JSON
+        # string that describes the error.
+
+        request.setResponseCode(failure.value.code)
+        error_name = failure.type.__name__
+        error_message = failure.getErrorMessage()
+        error_stack = failure.getTraceback() if tier == 'debug' else {}
+
+        return dumps({'error': error_name,
+                      'error_message': error_message,
+                      'stack': error_stack})
 
 
 if __name__ == '__main__':
